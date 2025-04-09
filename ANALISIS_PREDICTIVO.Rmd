@@ -1,0 +1,396 @@
+---
+title: "Análisis predictivo"
+author: "Joel Meneses"
+date: "2025-04-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+```{r, message=FALSE, warning=FALSE}
+if (!require("readxl")) install.packages("readxl")
+if (!require("forecast")) install.packages("forecast")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("lubridate")) install.packages("lubridate")
+if (!require("zoo")) install.packages("zoo")
+
+library(readxl)
+library(forecast)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(zoo)
+
+# MODELO PREDICTIVO PARA EL AÑO 2022 
+#CARGAR Y PREPARAR DATOS ===
+datos <- read_excel("lluvia_ponderada_estaciones.xlsx")
+datos$FECHA <- seq.Date(from = as.Date("1981-01-01"), by = "day", length.out = nrow(datos))
+
+mensual <- datos %>%
+  mutate(anio = year(FECHA), mes = month(FECHA)) %>%
+  group_by(anio, mes) %>%
+  summarise(lluvia = sum(TOTAL_PONDERADA, na.rm = TRUE)) %>%
+  ungroup()
+
+ts_mensual <- ts(mensual$lluvia, start = c(1981, 1), frequency = 12)
+
+#DEFINIR ENTRENAMIENTO Y PRUEBA ===
+train <- window(ts_mensual, end = c(2021, 12))
+test <- window(ts_mensual, start = c(2022, 1), end = c(2022, 12))
+
+# === 3. MODELOS DE PRONÓSTICO ===
+mensuales_prom <- tapply(train, cycle(train), mean, na.rm = TRUE)
+modelo_promedio <- ts(rep(mensuales_prom, length.out = 12), start = c(2022, 1), frequency = 12)
+
+movil <- rollmean(train, k = 3, align = "right", fill = NA)
+modelo_mov <- ts(tail(movil, 12), start = c(2022, 1), frequency = 12)
+
+modelo_ses <- ses(train, h = 12)
+modelo_holt <- holt(train, h = 12)
+modelo_hw <- hw(train, seasonal = "additive", h = 12)
+modelo_hw_mult <- hw(train, seasonal = "multiplicative", h = 12)
+modelo_nnet <- nnetar(train, size = 7, repeats = 5)
+pronostico_nnet <- forecast(modelo_nnet, h = 12)
+
+# FUNCIÓN DE MÉTRICAS ===
+calcular_metricas <- function(real, pred) {
+  mad <- mean(abs(real - pred))
+  mape <- mean(abs((real - pred) / real)) * 100
+  desv <- sd(real - pred)
+  return(c(MAD = round(mad, 2), MAPE = round(mape, 2), Desv = round(desv, 2)))
+}
+
+# COMPARACIÓN ENTRE MODELOS ===
+metricas_modelos <- rbind(
+  calcular_metricas(test, modelo_mov),
+  calcular_metricas(test, modelo_promedio),
+  calcular_metricas(test, modelo_ses$mean),
+  calcular_metricas(test, modelo_holt$mean),
+  calcular_metricas(test, modelo_hw$mean),
+  calcular_metricas(test, modelo_hw_mult$mean),
+  calcular_metricas(test, pronostico_nnet$mean)
+)
+
+comparacion_modelos <- data.frame(
+  Modelo = c("Promedio Móvil", "Promedio Mensual", "SES", "Holt", "Holt-Winters", "HW Multiplicativo", "NNAR"),
+  metricas_modelos
+)
+
+comparacion_modelos$Rank_MAD <- rank(comparacion_modelos$MAD)
+comparacion_modelos$Rank_Desv <- rank(comparacion_modelos$Desv)
+comparacion_modelos$Ranking_Promedio <- round(rowMeans(comparacion_modelos[, c("Rank_MAD", "Rank_Desv")]), 2)
+mejor_modelo <- comparacion_modelos$Modelo[which.min(comparacion_modelos$Ranking_Promedio)]
+comparacion_modelos$Mejor_Modelo <- ifelse(comparacion_modelos$Modelo == mejor_modelo, "✅ Mejor", "")
+
+comparacion_modelos <- comparacion_modelos %>% arrange(Ranking_Promedio)
+write.csv(comparacion_modelos, "comparacion_modelos_2022.csv", row.names = FALSE)
+print(comparacion_modelos)
+
+# EXPORTAR PRONÓSTICOS MENSUALES ===
+meses <- c("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+           "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
+
+pronosticos_mensuales <- data.frame(
+  Mes = meses,
+  Observado_2022 = as.numeric(test),
+  Promedio_Movil = as.numeric(modelo_mov),
+  Promedio = as.numeric(modelo_promedio),
+  SES = as.numeric(modelo_ses$mean),
+  Holt = as.numeric(modelo_holt$mean),
+  Holt_Winters = as.numeric(modelo_hw$mean),
+  Holt_Winters_Mult = as.numeric(modelo_hw_mult$mean),
+  NNAR = as.numeric(pronostico_nnet$mean)
+)
+
+fila_resumen <- data.frame(
+  Mes = "Promedio MAD",
+  Observado_2022 = NA,
+  Promedio_Movil = round(mean(abs(test - modelo_mov), na.rm = TRUE), 2),
+  Promedio = round(mean(abs(test - modelo_promedio), na.rm = TRUE), 2),
+  SES = round(mean(abs(test - modelo_ses$mean), na.rm = TRUE), 2),
+  Holt = round(mean(abs(test - modelo_holt$mean), na.rm = TRUE), 2),
+  Holt_Winters = round(mean(abs(test - modelo_hw$mean), na.rm = TRUE), 2),
+  Holt_Winters_Mult = round(mean(abs(test - modelo_hw_mult$mean), na.rm = TRUE), 2),
+  NNAR = round(mean(abs(test - pronostico_nnet$mean), na.rm = TRUE), 2)
+)
+
+pronosticos_mensuales <- rbind(pronosticos_mensuales, fila_resumen)
+write.csv(pronosticos_mensuales, "pronosticos_vs_observados_2022.csv", row.names = FALSE)
+
+# GRÁFICO DE PRONÓSTICOS VS OBSERVADO 2022 ===
+g <- autoplot(window(ts_mensual, start = c(2020,1))) +
+  autolayer(test, series = "Observado 2022", size = 1.2) +
+  autolayer(modelo_mov, series = "Promedio Móvil") +
+  autolayer(modelo_promedio, series = "Promedio Mensual") +
+  autolayer(modelo_ses$mean, series = "SES") +
+  autolayer(modelo_holt$mean, series = "Holt") +
+  autolayer(modelo_hw$mean, series = "Holt-Winters") +
+  autolayer(modelo_hw_mult$mean, series = "HW Multiplicativo", linetype = "dashed") +
+  autolayer(pronostico_nnet$mean, series = "NNAR") +
+  ggtitle("Pronóstico de Lluvia Mensual para 2022 vs Observado") +
+  ylab("Lluvia (mm)") + xlab("Año") +
+  annotate("text", x = 2021.5, y = max(train, na.rm = TRUE),
+           label = paste( mejor_modelo),
+           color = "darkgreen", size = 5, hjust = 0) +
+  guides(colour = guide_legend(title = "Modelo")) +
+  theme_minimal()
+
+print(g)
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE}
+
+
+
+
+library(readxl)
+library(forecast)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(zoo)
+
+# MODELO PREDICTIVO PARA EL AÑO 2021
+#CARGAR Y PREPARAR DATOS ===
+datos <- read_excel("lluvia_ponderada_estaciones.xlsx")
+datos$FECHA <- seq.Date(from = as.Date("1981-01-01"), by = "day", length.out = nrow(datos))
+
+mensual <- datos %>%
+  mutate(anio = year(FECHA), mes = month(FECHA)) %>%
+  group_by(anio, mes) %>%
+  summarise(lluvia = sum(TOTAL_PONDERADA, na.rm = TRUE)) %>%
+  ungroup()
+
+ts_mensual <- ts(mensual$lluvia, start = c(1981, 1), frequency = 12)
+
+# DEFINIR ENTRENAMIENTO Y PRUEBA ===
+train <- window(ts_mensual, end = c(2020, 12))
+test <- window(ts_mensual, start = c(2021, 1), end = c(2021, 12))
+
+# === 3. MODELOS DE PRONÓSTICO ===
+movil <- rollmean(train, k = 3, align = "right", fill = NA)
+modelo_mov <- ts(tail(movil, 12), start = c(2021, 1), frequency = 12)
+
+modelo_ses <- ses(train, h = 12)
+modelo_holt <- holt(train, h = 12)
+modelo_hw <- hw(train, seasonal = "additive", h = 12)
+modelo_hw_mult <- hw(train, seasonal = "multiplicative", h = 12)
+modelo_nnet <- nnetar(train, size = 7, repeats = 5)
+pronostico_nnet <- forecast(modelo_nnet, h = 12)
+
+# FUNCIÓN DE MÉTRICAS ===
+calcular_metricas <- function(real, pred) {
+  mad <- mean(abs(real - pred))
+  mape <- mean(abs((real - pred) / real)) * 100
+  desv <- sd(real - pred)
+  rmse <- sqrt(mean((real - pred)^2))
+  mae <- mean(abs(real - pred))
+  me <- mean(real - pred)
+  mpe <- mean((real - pred) / real) * 100
+  return(c(MAD = round(mad, 2), MAPE = round(mape, 2), Desv = round(desv, 2),
+           RMSE = round(rmse, 2), MAE = round(mae, 2), ME = round(me, 2), MPE = round(mpe, 2)))
+}
+
+# Calcular métricas para todos los modelos en 2021
+metricas_todos <- rbind(
+  calcular_metricas(test, modelo_mov),
+  calcular_metricas(test, modelo_ses$mean),
+  calcular_metricas(test, modelo_holt$mean),
+  calcular_metricas(test, modelo_hw$mean),
+  calcular_metricas(test, modelo_hw_mult$mean),
+  calcular_metricas(test, pronostico_nnet$mean)
+)
+rownames(metricas_todos) <- c("Promedio Móvil", "SES", "Holt", "Holt-Winters", "HW Mult", "NNAR")
+
+metricas_df <- data.frame(Modelo = rownames(metricas_todos), metricas_todos)
+metricas_df$Rank_MAD <- rank(metricas_df$MAD)
+metricas_df$Rank_MAPE <- rank(metricas_df$MAPE)
+metricas_df$Rank_Desv <- rank(metricas_df$Desv)
+metricas_df$Rank_RMSE <- rank(metricas_df$RMSE)
+metricas_df$Rank_MAE <- rank(metricas_df$MAE)
+metricas_df$Rank_ME <- rank(abs(metricas_df$ME))
+metricas_df$Rank_MPE <- rank(abs(metricas_df$MPE))
+metricas_df$Ranking_Total <- round(rowMeans(metricas_df[, grepl("^Rank_", names(metricas_df))]), 2)
+mejor_modelo <- metricas_df$Modelo[which.min(metricas_df$Ranking_Total)]
+metricas_df$Mejor_Modelo <- ifelse(metricas_df$Modelo == mejor_modelo, "✅ Mejor", "")
+metricas_df <- metricas_df %>% arrange(Ranking_Total)
+
+knitr::kable(metricas_df, caption = "Ranking Comparado por Todas las Métricas para 2021")
+write.csv(metricas_df, "ranking_metricas_modelos_2021.csv", row.names = FALSE)
+
+# EXPORTAR PRONÓSTICOS MENSUALES ===
+meses <- c("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+           "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
+
+pronosticos_mensuales <- data.frame(
+  Mes = meses,
+  Observado_2021 = as.numeric(test),
+  Promedio_Movil = as.numeric(modelo_mov),
+  SES = as.numeric(modelo_ses$mean),
+  Holt = as.numeric(modelo_holt$mean),
+  Holt_Winters = as.numeric(modelo_hw$mean),
+  Holt_Winters_Mult = as.numeric(modelo_hw_mult$mean),
+  NNAR = as.numeric(pronostico_nnet$mean)
+)
+
+fila_resumen <- data.frame(
+  Mes = "Promedio MAD",
+  Observado_2021 = NA,
+  Promedio_Movil = round(mean(abs(test - modelo_mov), na.rm = TRUE), 2),
+  SES = round(mean(abs(test - modelo_ses$mean), na.rm = TRUE), 2),
+  Holt = round(mean(abs(test - modelo_holt$mean), na.rm = TRUE), 2),
+  Holt_Winters = round(mean(abs(test - modelo_hw$mean), na.rm = TRUE), 2),
+  Holt_Winters_Mult = round(mean(abs(test - modelo_hw_mult$mean), na.rm = TRUE), 2),
+  NNAR = round(mean(abs(test - pronostico_nnet$mean), na.rm = TRUE), 2)
+)
+
+pronosticos_mensuales <- rbind(pronosticos_mensuales, fila_resumen)
+write.csv(pronosticos_mensuales, "pronosticos_vs_observados_2021.csv", row.names = FALSE)
+
+# GRÁFICO DE PRONÓSTICOS VS OBSERVADO 2021 ===
+g <- autoplot(window(ts_mensual, start = c(2019,1))) +
+  autolayer(test, series = "Observado 2021", size = 0.75) +
+  autolayer(modelo_mov, series = "Promedio Móvil") +
+  autolayer(modelo_ses$mean, series = "SES") +
+  autolayer(modelo_holt$mean, series = "Holt") +
+  autolayer(modelo_hw$mean, series = "Holt-Winters") +
+  autolayer(modelo_hw_mult$mean, series = "HW Multiplicativo", linetype = "dashed") +
+  autolayer(pronostico_nnet$mean, series = "NNAR") +
+  ggtitle("Pronóstico de Lluvia Mensual para 2021 vs Observado") +
+  ylab("Lluvia (mm)") + xlab("Año") +
+  annotate("text", x = 2020.5, y = max(train, na.rm = TRUE),
+           label = paste("Mejor Modelo:", mejor_modelo),
+           color = "darkgreen", size = 5, hjust = 0) +
+  guides(colour = guide_legend(title = "Modelo")) +
+  theme_minimal()
+
+print(g)
+
+# ANÁLISIS ANOVA DE ERRORES ===
+errores <- data.frame(
+  Modelo = rep(c("Promedio Móvil", "SES", "Holt", "Holt-Winters", "HW Mult", "NNAR"), each = 12),
+  ErrorAbs = c(
+    abs(test - modelo_mov),
+    abs(test - modelo_ses$mean),
+    abs(test - modelo_holt$mean),
+    abs(test - modelo_hw$mean),
+    abs(test - modelo_hw_mult$mean),
+    abs(test - pronostico_nnet$mean)
+  ),
+  Desv = c(
+    test - modelo_mov,
+    test - modelo_ses$mean,
+    test - modelo_holt$mean,
+    test - modelo_hw$mean,
+    test - modelo_hw_mult$mean,
+    test - pronostico_nnet$mean
+  )
+)
+
+# ANOVA sobre error absoluto
+anova_result <- aov(ErrorAbs ~ Modelo, data = errores)
+summary(anova_result)
+
+# ANOVA sobre desviación (residual)
+anova_desv <- aov(Desv ~ Modelo, data = errores)
+summary(anova_desv)
+
+# BOXPLOTS DE ERRORES ===
+ggplot(errores, aes(x = Modelo, y = ErrorAbs, fill = Modelo)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Distribución de Errores Absolutos por Modelo",
+       x = "Modelo", y = "Error Absoluto") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+ggplot(errores, aes(x = Modelo, y = Desv, fill = Modelo)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Distribución de Desviaciones por Modelo",
+       x = "Modelo", y = "Desviación (Residuo)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+
+
+# Cargar librerías necesarias
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(forecast)
+library(ggplot2)
+# MODELO PREDICTIVO NNAR PARA EL AÑO 2023
+# === 1. Cargar y preparar datos ===
+datos <- read_excel("lluvia_ponderada_estaciones.xlsx")
+datos$FECHA <- seq.Date(from = as.Date("1981-01-01"), by = "day", length.out = nrow(datos))
+
+mensual <- datos %>%
+  mutate(anio = year(FECHA), mes = month(FECHA)) %>%
+  group_by(anio, mes) %>%
+  summarise(lluvia = sum(TOTAL_PONDERADA, na.rm = TRUE)) %>%
+  ungroup()
+
+ts_mensual <- ts(mensual$lluvia, start = c(1981, 1), frequency = 12)
+train <- window(ts_mensual, end = c(2022, 12))
+
+# === 2. Modelo NNAR y pronóstico para 2023 ===
+modelo_nnet_2023 <- nnetar(train, size = 7, repeats = 20)
+pronostico_2023 <- forecast(modelo_nnet_2023, h = 12, PI = TRUE, bootstrap = TRUE)
+
+# === 3. Comparación con promedio histórico ===
+prom_hist <- mean(train, na.rm = TRUE)
+prom_2023 <- mean(pronostico_2023$mean)
+
+cat("Promedio histórico (1981–2022):", round(prom_hist, 2), "mm\n")
+cat("Promedio pronosticado 2023:", round(prom_2023, 2), "mm\n")
+
+if (prom_2023 > prom_hist) {
+  cat("🔼 El pronóstico de 2023 está POR ENCIMA del promedio histórico.\n")
+} else if (prom_2023 < prom_hist) {
+  cat("🔽 El pronóstico de 2023 está POR DEBAJO del promedio histórico.\n")
+} else {
+  cat("⏺ El pronóstico de 2023 ES IGUAL al promedio histórico.\n")
+}
+
+# === 4. Exportar pronóstico 2023 ===
+meses <- c("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+           "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
+
+pronostico_df_2023 <- data.frame(
+  Mes = meses,
+  Lluvia_Pronosticada_mm = round(as.numeric(pronostico_2023$mean), 2)
+)
+
+# Añadir intervalos de confianza si están disponibles
+if (!is.null(pronostico_2023$lower)) {
+  pronostico_df_2023$IC_80_inf <- round(pronostico_2023$lower[,1], 2)
+  pronostico_df_2023$IC_80_sup <- round(pronostico_2023$upper[,1], 2)
+  pronostico_df_2023$IC_95_inf <- round(pronostico_2023$lower[,2], 2)
+  pronostico_df_2023$IC_95_sup <- round(pronostico_2023$upper[,2], 2)
+}
+
+write.csv(pronostico_df_2023, "pronostico_lluvia_2023_NNAR.csv", row.names = FALSE)
+
+# === 5. Gráfico del pronóstico ===
+autoplot(train) +
+  autolayer(pronostico_2023, series = "Pronóstico NNAR 2023") +
+  ggtitle("Pronóstico de Lluvia Mensual para 2023 (NNAR)") +
+  ylab("Lluvia (mm)") + xlab("Año") +
+  theme_minimal()
+
+
+

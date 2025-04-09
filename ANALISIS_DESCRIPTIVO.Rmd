@@ -1,0 +1,115 @@
+---
+title: 'Análisis descriptivo (código en R):'
+author: "Joel Meneses"
+date: "2025-04-09"
+output: html_document
+---
+
+```{r, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(plotly)
+library(zoo)
+library(lubridate)
+
+# Cargar datos ponderados
+lluvia_ponderada <- read_excel("lluvia_ponderada_estaciones.xlsx")
+lluvia_ponderada$FECHA <- as.Date(lluvia_ponderada$FECHA)
+
+# Calcular percentiles
+percentiles <- quantile(lluvia_ponderada$TOTAL_PONDERADA, probs = c(0.1, 0.25, 0.5, 0.75, 0.9), na.rm = TRUE)
+print(percentiles)
+
+# Tendencia: media móvil de 30 días
+lluvia_ponderada$tendencia_movil <- zoo::rollmean(lluvia_ponderada$TOTAL_PONDERADA, k = 30, fill = NA)
+
+# Gráfico de línea con tendencia
+ggplot(lluvia_ponderada, aes(x = FECHA)) +
+  geom_line(aes(y = TOTAL_PONDERADA), color = "steelblue", alpha = 0.5) +
+  geom_line(aes(y = tendencia_movil), color = "firebrick", size = 1) +
+  labs(title = "Precipitación Ponderada Diaria y Tendencia (Media Móvil 30 días)",
+       y = "Precipitación Ponderada (mm)", x = "Fecha")
+
+# Gráfico interactivo
+ggplotly(
+  ggplot(lluvia_ponderada, aes(x = FECHA, y = TOTAL_PONDERADA)) +
+    geom_line(color = "darkgreen") +
+    labs(title = "Precipitación Ponderada Diaria - Interactivo", y = "mm", x = "Fecha")
+)
+
+# Boxplot por estación
+datos_largos_ponderados <- lluvia_ponderada %>%
+  tidyr::pivot_longer(-c(FECHA, TOTAL_PONDERADA), names_to = "estacion", values_to = "lluvia")
+
+ggplot(datos_largos_ponderados, aes(x = estacion, y = lluvia)) +
+  geom_boxplot(fill = "skyblue") +
+  theme_minimal() +
+  labs(title = "Distribución de Precipitación Ponderada por Estación", x = "Estación", y = "Precipitación (mm)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Crear base mensual por estación
+datos_mensuales <- datos_largos_ponderados %>%
+  mutate(anio = year(FECHA), mes = month(FECHA)) %>%
+  group_by(estacion, anio, mes) %>%
+  summarise(precipitacion_mensual = sum(lluvia, na.rm = TRUE), .groups = "drop")
+# Gráfico de densidad mensual combinado
+ggplot(datos_mensuales, aes(x = precipitacion_mensual, fill = estacion)) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Distribución de Precipitación Mensual Ponderada por Estación",
+    x = "Precipitación mensual (mm)",
+    y = "Densidad"
+  ) +
+  theme_minimal()
+
+# Crear base anual
+datos_anuales <- datos_largos_ponderados %>%
+  mutate(anio = year(FECHA)) %>%
+  group_by(estacion, anio) %>%
+  summarise(precipitacion_anual = sum(lluvia, na.rm = TRUE), .groups = "drop")
+
+# Gráfico de densidad anual combinado
+ggplot(datos_anuales, aes(x = precipitacion_anual, fill = estacion)) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Distribución de Precipitación Anual Ponderada por Estación",
+    x = "Precipitación anual (mm)",
+    y = "Densidad"
+  ) +
+  theme_minimal()
+
+# Asegurar que la fecha esté bien formateada
+lluvia_ponderada$FECHA <- as.Date(lluvia_ponderada$FECHA)
+
+# --- BOX PLOT MENSUAL (total ponderado) ---
+lluvia_ponderada_mensual <- lluvia_ponderada %>%
+  mutate(mes = month(FECHA)) %>%
+  group_by(anio = year(FECHA), mes) %>%
+  summarise(precipitacion = sum(TOTAL_PONDERADA, na.rm = TRUE), .groups = "drop")
+
+ggplot(lluvia_ponderada_mensual, aes(x = factor(mes), y = precipitacion)) +
+  geom_boxplot(fill = "lightgreen") +
+  labs(title = "Boxplot mensual por mes", x = "Mes", y = "Precipitación (mm)") +
+  theme_minimal()
+
+# Crear base anual por estación (varios valores por año)
+datos_anuales <- datos_largos_ponderados %>%
+  mutate(anio = year(FECHA)) %>%
+  group_by(estacion, anio) %>%
+  summarise(precipitacion_anual = sum(lluvia, na.rm = TRUE), .groups = "drop")
+
+# Graficar boxplot real por año con múltiples estaciones
+ggplot(datos_anuales, aes(x = factor(anio), y = precipitacion_anual)) +
+  geom_boxplot(fill = "tomato") +
+  labs(title = "Boxplot anual por año", x = "Año", y = "Precipitación (mm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, size = 6))
+
+
+
+
+
+```
+
