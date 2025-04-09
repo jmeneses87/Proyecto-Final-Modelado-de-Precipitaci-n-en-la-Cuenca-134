@@ -1,0 +1,978 @@
+---
+title: "Modelado de Reconstrucción Histórica y Predictivo de la Precipitación en la Cuenca Hidrográfica del Río Grande (134) de la República de Panamá”"
+author: "Joel Meneses"
+date: "2025-03-22"
+output:
+    html_document:
+      toc: TRUE 
+      toc_float: TRUE
+      code_download: TRUE
+      theme: united
+---
+
+```{css, echo=FALSE}
+<style>
+.tocify {
+  background-color: #f8f9fa;
+  border-radius: 8px;
+  padding: 10px;
+  border: 1px solid #ddd;
+}
+.tocify-item {
+  padding: 5px 10px;
+  font-size: 14px;
+  color: #333;
+}
+.tocify-item.active {
+  background-color: #e74c3c;
+  color: white;
+  font-weight: bold;
+  border-radius: 5px;
+}
+</style>
+```
+
+
+<center>
+
+![Contenido del Proyecto](D:/JOEL/MAESTRIA/MODELOS PREDICTIVOS/PROYECTO_FINAL/PROYECTO_FINAL.jpg)
+
+</center>
+
+## 1. Contenido del Proyecto
+
+El proceso de análisis de datos de **Las estaciones de Lluvia de la Cuenca de río Grande**, que abarca el período de 1981 a 2022, comienza con la recopilación de datos diarios de estaciones meteorológicas, muchas de las cuales presentan datos faltantes. Estos datos se cargan y procesan en R, donde se limpian (manejando valores faltantes y corrigiendo inconsistencias) y se analizan para extraer información relevante. Luego, se genera una base de datos que incluye lluvia diaria, mensual y detalles de las estaciones. 
+
+## 2. Cargar Librerias y Datos Crudos
+
+```{r, message=FALSE, warning=FALSE}
+
+ 
+
+
+# Luego intenta cargar de nuevo
+library(sp)
+library(raster)
+library(raster)
+library(tidyverse)
+library(lubridate)
+library(leaflet)
+library(sf)
+library(ggplot2)       
+library(ggthemes)      
+library(missForest)    
+library(DataExplorer)  
+library(corrplot)      
+library(zoo)           
+library(xts)           
+library(lattice)       
+library(hydroTSM)      
+library(tidyr)         
+library(mice) 
+library(lubridate)
+library(reticulate)
+library(trend)
+library(naniar)
+library(naniar)
+library(plotly)
+library(reshape2)
+library(tidyverse)
+library(readr)
+library(sf)
+library(leaflet)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(gganimate)
+library(transformr)
+library(gifski)
+library(lubridate)
+library(dplyr)
+library(lubridate)
+library(readxl)
+library(forecast)
+
+
+# Importar archivo CSV
+datos <- read.csv("D:/JOEL/MAESTRIA/MODELOS PREDICTIVOS/PROYECTO_FINAL/precipitacion_cuenca134.csv")
+
+
+# Exploración básica de los datos
+head(datos)
+names(datos)
+dim(datos)
+class(datos)
+str(datos)
+summary(datos)
+dim(datos)
+
+# Filtrar columnas con menos del 90% de valores faltantes
+datos_filtrados <- datos[, colMeans(is.na(datos)) < 0.35]
+
+
+# Muestra solo las primeras 50 estaciones
+plot_missing(datos_filtrados) +
+  ggtitle("Prorcentajes de Valores Valtantes") +
+  theme(plot.title = element_text(size = 2, face = "bold"),
+        axis.text.x = element_text(angle = 90, hjust = 0.3),
+        axis.text.y = element_text(size = 2),
+        plot.margin = margin(0.1, 0.1, 0.1, 0.1, "cm"))
+
+#Explorar patrones en los datos faltantes
+vis_miss(datos_filtrados, warn_large_data = FALSE) +
+  ggtitle("Valores Faltantes en Datos Filtrados") +
+  theme(plot.title = element_text(size = 10, face = "bold"),
+        axis.text.x = element_text(angle = 90, hjust = 1, size = 5),
+        axis.text.y = element_text(size = 10),
+        plot.margin = margin(1, 1, 1, 1, "cm"))
+
+```
+
+## 3. Limpieza de Datos
+
+```{r, message=FALSE, warning=FALSE}
+# Convertir a objeto zoo
+fechas <- as.Date(datos_filtrados$FECHA, format = "%Y/%m/%d")  
+precipitacion <- datos_filtrados[, -1]  
+str(datos_filtrados$FECHA)
+
+# Generar imputación con el método Predictive Mean Matching (pmm)
+imp_mice <- mice(precipitacion, method = "pmm", m = 5)
+
+# Obtener los datos imputados
+precipitacion_imputado <- complete(imp_mice)
+
+# Verificar las primeras filas
+head(precipitacion_imputado)
+
+#Comprobar que no hay datos faltantes
+summary(precipitacion_imputado)
+
+
+# O si está en "YYYY-MM-DD"
+datos$FECHA <- ymd(datos$FECHA)
+
+# Asignar la columna de fechas a los datos imputados
+precipitacion_imputado$FECHA <- datos$FECHA
+
+# Reorganizar para que la fecha sea la primera columna
+precipitacion_imputado <- precipitacion_imputado[, c(ncol(precipitacion_imputado), 1:(ncol(precipitacion_imputado)-1))]
+
+# Verificar que la fecha está bien asignada
+head(precipitacion_imputado)
+
+
+```
+
+## 4. Analisis de Datos
+
+```{r, message=FALSE, warning=FALSE}
+#Histogramas
+plot_histogram(precipitacion_imputado)
+sum(is.na(precipitacion_imputado$FECHA))  # Verificar valores NA
+sum(is.nan(precipitacion_imputado$FECHA)) # Verificar valores NaN
+sum(is.infinite(precipitacion_imputado$FECHA)) # Verificar valores Inf
+
+# Convertir a objeto zoo
+precipitacion_zoo <- zoo(precipitacion_imputado[, -1], order.by = precipitacion_imputado$FECHA)
+
+#Media, mediana, máximo, mínimo y desviación estándar:
+summary(precipitacion_zoo)
+
+
+### Calcular la matriz de correlación
+matriz_correlacion <- cor(precipitacion_zoo, use = "complete.obs")
+
+#  Graficar la matriz de correlación con corrplot
+corrplot(matriz_correlacion, 
+         method = "circle",  # Método de visualización (círculos)
+         type = "upper",     # Mostrar solo la mitad superior de la matriz
+         tl.col = "black",   # Color de las etiquetas
+         tl.srt = 30,        # Rotación de las etiquetas
+         addCoef.col = "black",  # Agregar coeficientes de correlación
+         number.cex = 0.9,   # Tamaño de los coeficientes
+         col = colorRampPalette(c("blue", "white", "red"))(200))  # Paleta de colores
+
+# Convertir a xts si es necesario
+date.xts <- as.xts(precipitacion_zoo)
+
+
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+
+# Calcular el máximo valor de precipitación
+ymax <- max(precipitacion_zoo, na.rm = TRUE)
+print(ymax)
+
+
+# Graficar el primer grupo (columnas 1 a 30)
+xyplot(precipitacion_zoo, 
+       main = "Precipitaciones de Panamá (Estaciones Cuenca No. 134)", 
+       col = rainbow(30),  # Usar 30 colores diferentes
+       ylim = c(0, ymax),
+       type = "h",
+       scales = list(x = list(rot = 90)),  # Rotar etiquetas del eje X
+       xlab = "Tiempo", 
+       ylab = "Precipitación (mm)")
+
+                            
+
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(readr)
+
+# Crear un data.frame con los datos imputados
+df_estaciones <- data.frame(precipitacion_imputado)
+
+# Paso 6: Exportar a un archivo CSV
+write.csv(df_estaciones, "lluvia_cuenca134.csv", row.names = FALSE)
+
+datos_diarios <- read.csv("D:/JOEL/MAESTRIA/MODELOS PREDICTIVOS/PROYECTO_FINAL/lluvia_cuenca134.csv")
+
+datos_largos <- datos_diarios %>%
+  rename(fecha = FECHA) %>%
+  mutate(fecha = as.Date(fecha)) %>%
+  pivot_longer(-fecha, names_to = "nombre", values_to = "precipitacion") %>%
+  mutate(anio = year(fecha), mes = month(fecha))
+
+promedios <- datos_largos %>%
+  group_by(nombre) %>%
+  summarise(pp_anual = mean(precipitacion, na.rm = TRUE))
+
+estaciones <- read_csv("D:/JOEL/MAESTRIA/MODELOS PREDICTIVOS/PROYECTO_FINAL/estaciones.csv",
+                       locale = locale(encoding = "Latin1"))
+
+mapa_datos <- estaciones %>%
+  mutate(nombre = gsub(" ", ".", ESTACION)) %>%
+  left_join(promedios, by = "nombre")
+
+```
+
+## 5. Ponderación de los Datos
+
+```{r, message=FALSE, warning=FALSE}
+library(sf)
+summary(datos_largos$precipitacion)
+
+datos_largos %>%
+  group_by(nombre) %>%
+  summarise(
+    media = mean(precipitacion, na.rm = TRUE),
+    mediana = median(precipitacion, na.rm = TRUE),
+    sd = sd(precipitacion, na.rm = TRUE),
+    min = min(precipitacion, na.rm = TRUE),
+    max = max(precipitacion, na.rm = TRUE),
+    n = n()
+  )
+
+# Validar estaciones con coordenadas válidas
+estaciones_validas <- estaciones %>%
+  filter(!is.na(LONGITUD) & !is.na(LATITUD))
+summary(estaciones_validas$LONGITUD)
+summary(estaciones_validas$LATITUD)
+
+# Convertir estaciones a objeto sf
+estaciones_sf <- estaciones %>%
+  st_as_sf(coords = c("LONGITUD", "LATITUD"), crs = 4326) %>%
+  st_transform(32617)
+
+
+bbox <- st_bbox(estaciones_sf)
+
+# Valida NA explícitamente
+if (any(is.na(bbox))) stop("Bounding box contiene NA. Revisa tus coordenadas.")
+
+cuadro <- st_as_sfc(st_bbox(c(
+  xmin = as.numeric(bbox["xmin"]) - 10000,
+  xmax = as.numeric(bbox["xmax"]) + 10000,
+  ymin = as.numeric(bbox["ymin"]) - 10000,
+  ymax = as.numeric(bbox["ymax"]) + 10000
+), crs = st_crs(estaciones_sf)))
+
+    
+
+
+# Calcular polígonos de Thiessen (Voronoi)
+thiessen <- st_voronoi(do.call(st_union, st_geometry(estaciones_sf)), envelope = cuadro)
+thiessen_pol <- st_collection_extract(thiessen)
+thiessen_sf <- st_sf(geometry = thiessen_pol) %>% st_set_crs(32617)
+
+# Unir atributos
+thiessen_sf <- thiessen_sf %>%
+  st_join(estaciones_sf) %>%
+  filter(!is.na(ESTACION))
+
+names(thiessen_sf)
+
+# Leer cuenca y recortar
+cuenca <- st_read("D:/JOEL/MAESTRIA/MODELOS PREDICTIVOS/PROYECTO_FINAL/cuenca134.shp") %>% st_transform(32617)
+
+thiessen_recorte <- st_intersection(thiessen_sf, cuenca)
+names(thiessen_recorte)
+
+
+
+
+# Calcular área y peso relativo
+thiessen_recorte <- thiessen_recorte %>%
+  mutate(area_km2 = as.numeric(st_area(geometry)) / 1e6,
+         peso_area = area_km2 / sum(area_km2))
+
+thiessen_recorte <- thiessen_recorte %>%
+  mutate(estacion = toupper(gsub("[[:punct:] ]", "", ESTACION)))
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE}
+# Cargar librerías necesarias
+library(dplyr)
+library(tidyr)
+library(sf)
+library(knitr)
+library(kableExtra)
+
+# 1. Calcular promedio por estación (omite la columna de fecha)
+promedios <- precipitacion_imputado %>%
+  select(-FECHA) %>%
+  summarise(across(everything(), ~ mean(.x, na.rm = TRUE))) %>%
+  pivot_longer(cols = everything(), names_to = "estacion", values_to = "precip_promedio")
+
+# 2. Estandarizar nombres en ambos dataframes para asegurar coincidencias
+promedios <- promedios %>%
+  mutate(estacion = toupper(gsub("[[:punct:] ]", "", estacion)))
+
+
+names(thiessen_recorte)
+
+thiessen_recorte <- thiessen_recorte %>%
+  rename(estacion = estacion) %>%
+  mutate(
+    estacion = toupper(gsub("[[:punct:] ]", "", estacion)),
+    area_km2 = as.numeric(st_area(geometry)) / 1e6,
+    peso_area = area_km2 / sum(area_km2)
+  )
+
+# 3. Unir datos de promedios con pesos
+tabla_ponderada <- promedios %>%
+  inner_join(thiessen_recorte %>% st_drop_geometry(), by = "estacion") %>%
+  mutate(
+    valor_ponderado = precip_promedio * peso_area
+  )
+
+# 4. Mostrar tabla de ponderación
+tabla_ponderada %>%
+  select(estacion, precip_promedio, peso_area, valor_ponderado) %>%
+  arrange(desc(peso_area)) %>%
+  kable(
+    digits = 2,
+    col.names = c("Estación", "Precipitación Promedio (mm)", "Peso del Área", "Valor Ponderado"),
+    caption = "Tabla de Precipitación Ponderada por Estación"
+  ) %>%
+  kable_styling(
+    full_width = FALSE,
+    bootstrap_options = c("striped", "hover", "condensed"),
+    position = "center"
+  )
+
+# 5. Mostrar total ponderado
+total_ponderado <- sum(tabla_ponderada$valor_ponderado, na.rm = TRUE)
+cat("**Precipitación ponderada total de la cuenca:**", round(total_ponderado, 2), "mm")
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE}
+# Estandarizar nombres de columnas para que coincidan con 'estacion' de tabla_ponderada
+colnames(precipitacion_imputado) <- toupper(gsub("[[:punct:] ]", "", colnames(precipitacion_imputado)))
+
+# Crear vector de pesos por estación desde tabla_ponderada
+pesos <- tabla_ponderada %>%
+  select(estacion, peso_area)
+
+# Aplicar pesos a cada columna de estación
+lluvia_ponderada <- precipitacion_imputado
+for (est in pesos$estacion) {
+  if (est %in% colnames(lluvia_ponderada)) {
+    lluvia_ponderada[[est]] <- lluvia_ponderada[[est]] * pesos$peso_area[pesos$estacion == est]
+  }
+}
+
+# Calcular la precipitación ponderada total por día
+lluvia_ponderada$TOTAL_PONDERADA <- rowSums(lluvia_ponderada[, pesos$estacion], na.rm = TRUE)
+
+# Visualizar estadísticas básicas
+summary(lluvia_ponderada$TOTAL_PONDERADA)
+
+# Agregar la fecha a la tabla si no está incluida
+lluvia_ponderada$FECHA <- precipitacion_imputado$FECHA  # Asegúrate que FECHA aún existe
+
+# Reordenar columnas para que FECHA esté al principio
+lluvia_ponderada <- lluvia_ponderada %>%
+  select(FECHA, everything())
+
+# Exportar a archivo Excel
+library(writexl)
+
+write_xlsx(lluvia_ponderada, "lluvia_ponderada_estaciones.xlsx")
+
+```
+
+## 6. Análisis Descriptivode de la Precipitación Ponderada 
+
+```{r, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(plotly)
+library(zoo)
+library(lubridate)
+
+# 1. Cargar datos ponderados
+lluvia_ponderada <- read_excel("lluvia_ponderada_estaciones.xlsx")
+lluvia_ponderada$FECHA <- as.Date(lluvia_ponderada$FECHA)
+
+# 2. Calcular percentiles
+percentiles <- quantile(lluvia_ponderada$TOTAL_PONDERADA, probs = c(0.1, 0.25, 0.5, 0.75, 0.9), na.rm = TRUE)
+print(percentiles)
+
+# 3. Tendencia: media móvil de 30 días
+lluvia_ponderada$tendencia_movil <- zoo::rollmean(lluvia_ponderada$TOTAL_PONDERADA, k = 30, fill = NA)
+
+# 4. Gráfico de línea con tendencia
+ggplot(lluvia_ponderada, aes(x = FECHA)) +
+  geom_line(aes(y = TOTAL_PONDERADA), color = "steelblue", alpha = 0.5) +
+  geom_line(aes(y = tendencia_movil), color = "firebrick", size = 1) +
+  labs(title = "Precipitación Ponderada Diaria y Tendencia (Media Móvil 30 días)",
+       y = "Precipitación Ponderada (mm)", x = "Fecha")
+
+# 5. Gráfico interactivo
+ggplotly(
+  ggplot(lluvia_ponderada, aes(x = FECHA, y = TOTAL_PONDERADA)) +
+    geom_line(color = "darkgreen") +
+    labs(title = "Precipitación Ponderada Diaria - Interactivo", y = "mm", x = "Fecha")
+)
+
+# 6. Boxplot por estación
+datos_largos_ponderados <- lluvia_ponderada %>%
+  tidyr::pivot_longer(-c(FECHA, TOTAL_PONDERADA), names_to = "estacion", values_to = "lluvia")
+
+ggplot(datos_largos_ponderados, aes(x = estacion, y = lluvia)) +
+  geom_boxplot(fill = "skyblue") +
+  theme_minimal() +
+  labs(title = "Distribución de Precipitación Ponderada por Estación", x = "Estación", y = "Precipitación (mm)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Crear base mensual por estación
+datos_mensuales <- datos_largos_ponderados %>%
+  mutate(anio = year(FECHA), mes = month(FECHA)) %>%
+  group_by(estacion, anio, mes) %>%
+  summarise(precipitacion_mensual = sum(lluvia, na.rm = TRUE), .groups = "drop")
+# Gráfico de densidad mensual combinado
+ggplot(datos_mensuales, aes(x = precipitacion_mensual, fill = estacion)) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Distribución de Precipitación Mensual Ponderada por Estación",
+    x = "Precipitación mensual (mm)",
+    y = "Densidad"
+  ) +
+  theme_minimal()
+
+# Crear base anual
+datos_anuales <- datos_largos_ponderados %>%
+  mutate(anio = year(FECHA)) %>%
+  group_by(estacion, anio) %>%
+  summarise(precipitacion_anual = sum(lluvia, na.rm = TRUE), .groups = "drop")
+
+# Gráfico de densidad anual combinado
+ggplot(datos_anuales, aes(x = precipitacion_anual, fill = estacion)) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Distribución de Precipitación Anual Ponderada por Estación",
+    x = "Precipitación anual (mm)",
+    y = "Densidad"
+  ) +
+  theme_minimal()
+
+# Asegurar que la fecha esté bien formateada
+lluvia_ponderada$FECHA <- as.Date(lluvia_ponderada$FECHA)
+
+# --- BOX PLOT MENSUAL (total ponderado) ---
+lluvia_ponderada_mensual <- lluvia_ponderada %>%
+  mutate(mes = month(FECHA)) %>%
+  group_by(anio = year(FECHA), mes) %>%
+  summarise(precipitacion = sum(TOTAL_PONDERADA, na.rm = TRUE), .groups = "drop")
+
+ggplot(lluvia_ponderada_mensual, aes(x = factor(mes), y = precipitacion)) +
+  geom_boxplot(fill = "lightgreen") +
+  labs(title = "Boxplot mensual por mes", x = "Mes", y = "Precipitación (mm)") +
+  theme_minimal()
+
+# Crear base anual por estación (varios valores por año)
+datos_anuales <- datos_largos_ponderados %>%
+  mutate(anio = year(FECHA)) %>%
+  group_by(estacion, anio) %>%
+  summarise(precipitacion_anual = sum(lluvia, na.rm = TRUE), .groups = "drop")
+
+# Graficar boxplot real por año con múltiples estaciones
+ggplot(datos_anuales, aes(x = factor(anio), y = precipitacion_anual)) +
+  geom_boxplot(fill = "tomato") +
+  labs(title = "Boxplot anual por año", x = "Año", y = "Precipitación (mm)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, size = 6))
+
+
+
+```
+
+
+## 7. Mapa Interactivo con Leaflet
+
+```{r, message=FALSE, warning=FALSE}
+library(sf)
+library(dplyr)
+library(readr)
+library(leaflet)
+library(viridis)
+
+# 1. Leer shapefile de la cuenca
+cuenca <- st_read("D:/JOEL/MAESTRIA/MODELOS PREDICTIVOS/PROYECTO_FINAL/cuenca134.shp")
+cuenca <- st_transform(cuenca, crs = 4326)
+
+# 2. Leer datos de estaciones
+estaciones <- read_csv("D:/JOEL/MAESTRIA/MODELOS PREDICTIVOS/PROYECTO_FINAL/estaciones.csv",
+                       locale = locale(encoding = "Latin1"))
+
+# 3. Preparar nombres para unión
+estaciones_limpias <- estaciones %>%
+  mutate(estacion = toupper(gsub("[[:punct:] ]", "", ESTACION)))
+
+# 4. Calcular promedios anuales de lluvia por estación
+promedios_ponderados <- datos_largos_ponderados %>%
+  group_by(estacion) %>%
+  summarise(precip_promedio = mean(lluvia, na.rm = TRUE))
+
+
+# 5. Unir con datos de estaciones
+mapa_datos <- estaciones_limpias %>%
+  left_join(promedios_ponderados, by = "estacion") %>%
+  filter(!is.na(precip_promedio))
+
+# 6. Paleta de color
+pal <- colorNumeric("viridis", domain = mapa_datos$precip_promedio)
+
+# 7. Mapa interactivo
+leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(data = cuenca, color = "blue", weight = 2,
+              fillOpacity = 0.1, popup = "Cuenca 134") %>%
+  addCircleMarkers(data = mapa_datos,
+                   lng = ~LONGITUD, lat = ~LATITUD,
+                   radius = ~sqrt(precip_promedio) * 2,
+                   color = ~pal(precip_promedio),
+                   stroke = TRUE, fillOpacity = 0.9,
+                   label = ~paste(ESTACION, "<br>Prec. media:", round(precip_promedio, 1), "mm")) %>%
+  leaflet::addLegend("bottomright", pal = pal, values = mapa_datos$precip_promedio,
+            title = "Prec. media anual (mm)")
+
+```
+
+
+## 8. Modelos Predictivos
+
+
+
+```{r, message=FALSE, warning=FALSE}
+if (!require("readxl")) install.packages("readxl")
+if (!require("forecast")) install.packages("forecast")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("lubridate")) install.packages("lubridate")
+if (!require("zoo")) install.packages("zoo")
+
+library(readxl)
+library(forecast)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(zoo)
+
+# MODELO PREDICTIVO PARA EL AÑO 2022 
+#CARGAR Y PREPARAR DATOS ===
+datos <- read_excel("lluvia_ponderada_estaciones.xlsx")
+datos$FECHA <- seq.Date(from = as.Date("1981-01-01"), by = "day", length.out = nrow(datos))
+
+mensual <- datos %>%
+  mutate(anio = year(FECHA), mes = month(FECHA)) %>%
+  group_by(anio, mes) %>%
+  summarise(lluvia = sum(TOTAL_PONDERADA, na.rm = TRUE)) %>%
+  ungroup()
+
+ts_mensual <- ts(mensual$lluvia, start = c(1981, 1), frequency = 12)
+
+#DEFINIR ENTRENAMIENTO Y PRUEBA ===
+train <- window(ts_mensual, end = c(2021, 12))
+test <- window(ts_mensual, start = c(2022, 1), end = c(2022, 12))
+
+# === 3. MODELOS DE PRONÓSTICO ===
+mensuales_prom <- tapply(train, cycle(train), mean, na.rm = TRUE)
+modelo_promedio <- ts(rep(mensuales_prom, length.out = 12), start = c(2022, 1), frequency = 12)
+
+movil <- rollmean(train, k = 3, align = "right", fill = NA)
+modelo_mov <- ts(tail(movil, 12), start = c(2022, 1), frequency = 12)
+
+modelo_ses <- ses(train, h = 12)
+modelo_holt <- holt(train, h = 12)
+modelo_hw <- hw(train, seasonal = "additive", h = 12)
+modelo_hw_mult <- hw(train, seasonal = "multiplicative", h = 12)
+modelo_nnet <- nnetar(train, size = 7, repeats = 5)
+pronostico_nnet <- forecast(modelo_nnet, h = 12)
+
+# FUNCIÓN DE MÉTRICAS ===
+calcular_metricas <- function(real, pred) {
+  mad <- mean(abs(real - pred))
+  mape <- mean(abs((real - pred) / real)) * 100
+  desv <- sd(real - pred)
+  return(c(MAD = round(mad, 2), MAPE = round(mape, 2), Desv = round(desv, 2)))
+}
+
+# COMPARACIÓN ENTRE MODELOS ===
+metricas_modelos <- rbind(
+  calcular_metricas(test, modelo_mov),
+  calcular_metricas(test, modelo_promedio),
+  calcular_metricas(test, modelo_ses$mean),
+  calcular_metricas(test, modelo_holt$mean),
+  calcular_metricas(test, modelo_hw$mean),
+  calcular_metricas(test, modelo_hw_mult$mean),
+  calcular_metricas(test, pronostico_nnet$mean)
+)
+
+comparacion_modelos <- data.frame(
+  Modelo = c("Promedio Móvil", "Promedio Mensual", "SES", "Holt", "Holt-Winters", "HW Multiplicativo", "NNAR"),
+  metricas_modelos
+)
+
+comparacion_modelos$Rank_MAD <- rank(comparacion_modelos$MAD)
+comparacion_modelos$Rank_Desv <- rank(comparacion_modelos$Desv)
+comparacion_modelos$Ranking_Promedio <- round(rowMeans(comparacion_modelos[, c("Rank_MAD", "Rank_Desv")]), 2)
+mejor_modelo <- comparacion_modelos$Modelo[which.min(comparacion_modelos$Ranking_Promedio)]
+comparacion_modelos$Mejor_Modelo <- ifelse(comparacion_modelos$Modelo == mejor_modelo, "✅ Mejor", "")
+
+comparacion_modelos <- comparacion_modelos %>% arrange(Ranking_Promedio)
+write.csv(comparacion_modelos, "comparacion_modelos_2022.csv", row.names = FALSE)
+print(comparacion_modelos)
+
+# EXPORTAR PRONÓSTICOS MENSUALES ===
+meses <- c("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+           "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
+
+pronosticos_mensuales <- data.frame(
+  Mes = meses,
+  Observado_2022 = as.numeric(test),
+  Promedio_Movil = as.numeric(modelo_mov),
+  Promedio = as.numeric(modelo_promedio),
+  SES = as.numeric(modelo_ses$mean),
+  Holt = as.numeric(modelo_holt$mean),
+  Holt_Winters = as.numeric(modelo_hw$mean),
+  Holt_Winters_Mult = as.numeric(modelo_hw_mult$mean),
+  NNAR = as.numeric(pronostico_nnet$mean)
+)
+
+fila_resumen <- data.frame(
+  Mes = "Promedio MAD",
+  Observado_2022 = NA,
+  Promedio_Movil = round(mean(abs(test - modelo_mov), na.rm = TRUE), 2),
+  Promedio = round(mean(abs(test - modelo_promedio), na.rm = TRUE), 2),
+  SES = round(mean(abs(test - modelo_ses$mean), na.rm = TRUE), 2),
+  Holt = round(mean(abs(test - modelo_holt$mean), na.rm = TRUE), 2),
+  Holt_Winters = round(mean(abs(test - modelo_hw$mean), na.rm = TRUE), 2),
+  Holt_Winters_Mult = round(mean(abs(test - modelo_hw_mult$mean), na.rm = TRUE), 2),
+  NNAR = round(mean(abs(test - pronostico_nnet$mean), na.rm = TRUE), 2)
+)
+
+pronosticos_mensuales <- rbind(pronosticos_mensuales, fila_resumen)
+write.csv(pronosticos_mensuales, "pronosticos_vs_observados_2022.csv", row.names = FALSE)
+
+# GRÁFICO DE PRONÓSTICOS VS OBSERVADO 2022 ===
+g <- autoplot(window(ts_mensual, start = c(2020,1))) +
+  autolayer(test, series = "Observado 2022", size = 1.2) +
+  autolayer(modelo_mov, series = "Promedio Móvil") +
+  autolayer(modelo_promedio, series = "Promedio Mensual") +
+  autolayer(modelo_ses$mean, series = "SES") +
+  autolayer(modelo_holt$mean, series = "Holt") +
+  autolayer(modelo_hw$mean, series = "Holt-Winters") +
+  autolayer(modelo_hw_mult$mean, series = "HW Multiplicativo", linetype = "dashed") +
+  autolayer(pronostico_nnet$mean, series = "NNAR") +
+  ggtitle("Pronóstico de Lluvia Mensual para 2022 vs Observado") +
+  ylab("Lluvia (mm)") + xlab("Año") +
+  annotate("text", x = 2021.5, y = max(train, na.rm = TRUE),
+           label = paste( mejor_modelo),
+           color = "darkgreen", size = 5, hjust = 0) +
+  guides(colour = guide_legend(title = "Modelo")) +
+  theme_minimal()
+
+print(g)
+
+```
+
+
+
+```{r, message=FALSE, warning=FALSE}
+
+
+
+
+library(readxl)
+library(forecast)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(zoo)
+
+# MODELO PREDICTIVO PARA EL AÑO 2021
+#CARGAR Y PREPARAR DATOS ===
+datos <- read_excel("lluvia_ponderada_estaciones.xlsx")
+datos$FECHA <- seq.Date(from = as.Date("1981-01-01"), by = "day", length.out = nrow(datos))
+
+mensual <- datos %>%
+  mutate(anio = year(FECHA), mes = month(FECHA)) %>%
+  group_by(anio, mes) %>%
+  summarise(lluvia = sum(TOTAL_PONDERADA, na.rm = TRUE)) %>%
+  ungroup()
+
+ts_mensual <- ts(mensual$lluvia, start = c(1981, 1), frequency = 12)
+
+# DEFINIR ENTRENAMIENTO Y PRUEBA ===
+train <- window(ts_mensual, end = c(2020, 12))
+test <- window(ts_mensual, start = c(2021, 1), end = c(2021, 12))
+
+# === 3. MODELOS DE PRONÓSTICO ===
+movil <- rollmean(train, k = 3, align = "right", fill = NA)
+modelo_mov <- ts(tail(movil, 12), start = c(2021, 1), frequency = 12)
+
+modelo_ses <- ses(train, h = 12)
+modelo_holt <- holt(train, h = 12)
+modelo_hw <- hw(train, seasonal = "additive", h = 12)
+modelo_hw_mult <- hw(train, seasonal = "multiplicative", h = 12)
+modelo_nnet <- nnetar(train, size = 7, repeats = 5)
+pronostico_nnet <- forecast(modelo_nnet, h = 12)
+
+# FUNCIÓN DE MÉTRICAS ===
+calcular_metricas <- function(real, pred) {
+  mad <- mean(abs(real - pred))
+  mape <- mean(abs((real - pred) / real)) * 100
+  desv <- sd(real - pred)
+  rmse <- sqrt(mean((real - pred)^2))
+  mae <- mean(abs(real - pred))
+  me <- mean(real - pred)
+  mpe <- mean((real - pred) / real) * 100
+  return(c(MAD = round(mad, 2), MAPE = round(mape, 2), Desv = round(desv, 2),
+           RMSE = round(rmse, 2), MAE = round(mae, 2), ME = round(me, 2), MPE = round(mpe, 2)))
+}
+
+# Calcular métricas para todos los modelos en 2021
+metricas_todos <- rbind(
+  calcular_metricas(test, modelo_mov),
+  calcular_metricas(test, modelo_ses$mean),
+  calcular_metricas(test, modelo_holt$mean),
+  calcular_metricas(test, modelo_hw$mean),
+  calcular_metricas(test, modelo_hw_mult$mean),
+  calcular_metricas(test, pronostico_nnet$mean)
+)
+rownames(metricas_todos) <- c("Promedio Móvil", "SES", "Holt", "Holt-Winters", "HW Mult", "NNAR")
+
+metricas_df <- data.frame(Modelo = rownames(metricas_todos), metricas_todos)
+metricas_df$Rank_MAD <- rank(metricas_df$MAD)
+metricas_df$Rank_MAPE <- rank(metricas_df$MAPE)
+metricas_df$Rank_Desv <- rank(metricas_df$Desv)
+metricas_df$Rank_RMSE <- rank(metricas_df$RMSE)
+metricas_df$Rank_MAE <- rank(metricas_df$MAE)
+metricas_df$Rank_ME <- rank(abs(metricas_df$ME))
+metricas_df$Rank_MPE <- rank(abs(metricas_df$MPE))
+metricas_df$Ranking_Total <- round(rowMeans(metricas_df[, grepl("^Rank_", names(metricas_df))]), 2)
+mejor_modelo <- metricas_df$Modelo[which.min(metricas_df$Ranking_Total)]
+metricas_df$Mejor_Modelo <- ifelse(metricas_df$Modelo == mejor_modelo, "✅ Mejor", "")
+metricas_df <- metricas_df %>% arrange(Ranking_Total)
+
+knitr::kable(metricas_df, caption = "Ranking Comparado por Todas las Métricas para 2021")
+write.csv(metricas_df, "ranking_metricas_modelos_2021.csv", row.names = FALSE)
+
+# EXPORTAR PRONÓSTICOS MENSUALES ===
+meses <- c("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+           "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
+
+pronosticos_mensuales <- data.frame(
+  Mes = meses,
+  Observado_2021 = as.numeric(test),
+  Promedio_Movil = as.numeric(modelo_mov),
+  SES = as.numeric(modelo_ses$mean),
+  Holt = as.numeric(modelo_holt$mean),
+  Holt_Winters = as.numeric(modelo_hw$mean),
+  Holt_Winters_Mult = as.numeric(modelo_hw_mult$mean),
+  NNAR = as.numeric(pronostico_nnet$mean)
+)
+
+fila_resumen <- data.frame(
+  Mes = "Promedio MAD",
+  Observado_2021 = NA,
+  Promedio_Movil = round(mean(abs(test - modelo_mov), na.rm = TRUE), 2),
+  SES = round(mean(abs(test - modelo_ses$mean), na.rm = TRUE), 2),
+  Holt = round(mean(abs(test - modelo_holt$mean), na.rm = TRUE), 2),
+  Holt_Winters = round(mean(abs(test - modelo_hw$mean), na.rm = TRUE), 2),
+  Holt_Winters_Mult = round(mean(abs(test - modelo_hw_mult$mean), na.rm = TRUE), 2),
+  NNAR = round(mean(abs(test - pronostico_nnet$mean), na.rm = TRUE), 2)
+)
+
+pronosticos_mensuales <- rbind(pronosticos_mensuales, fila_resumen)
+write.csv(pronosticos_mensuales, "pronosticos_vs_observados_2021.csv", row.names = FALSE)
+
+# GRÁFICO DE PRONÓSTICOS VS OBSERVADO 2021 ===
+g <- autoplot(window(ts_mensual, start = c(2019,1))) +
+  autolayer(test, series = "Observado 2021", size = 0.75) +
+  autolayer(modelo_mov, series = "Promedio Móvil") +
+  autolayer(modelo_ses$mean, series = "SES") +
+  autolayer(modelo_holt$mean, series = "Holt") +
+  autolayer(modelo_hw$mean, series = "Holt-Winters") +
+  autolayer(modelo_hw_mult$mean, series = "HW Multiplicativo", linetype = "dashed") +
+  autolayer(pronostico_nnet$mean, series = "NNAR") +
+  ggtitle("Pronóstico de Lluvia Mensual para 2021 vs Observado") +
+  ylab("Lluvia (mm)") + xlab("Año") +
+  annotate("text", x = 2020.5, y = max(train, na.rm = TRUE),
+           label = paste("Mejor Modelo:", mejor_modelo),
+           color = "darkgreen", size = 5, hjust = 0) +
+  guides(colour = guide_legend(title = "Modelo")) +
+  theme_minimal()
+
+print(g)
+
+# ANÁLISIS ANOVA DE ERRORES ===
+errores <- data.frame(
+  Modelo = rep(c("Promedio Móvil", "SES", "Holt", "Holt-Winters", "HW Mult", "NNAR"), each = 12),
+  ErrorAbs = c(
+    abs(test - modelo_mov),
+    abs(test - modelo_ses$mean),
+    abs(test - modelo_holt$mean),
+    abs(test - modelo_hw$mean),
+    abs(test - modelo_hw_mult$mean),
+    abs(test - pronostico_nnet$mean)
+  ),
+  Desv = c(
+    test - modelo_mov,
+    test - modelo_ses$mean,
+    test - modelo_holt$mean,
+    test - modelo_hw$mean,
+    test - modelo_hw_mult$mean,
+    test - pronostico_nnet$mean
+  )
+)
+
+# ANOVA sobre error absoluto
+anova_result <- aov(ErrorAbs ~ Modelo, data = errores)
+summary(anova_result)
+
+# ANOVA sobre desviación (residual)
+anova_desv <- aov(Desv ~ Modelo, data = errores)
+summary(anova_desv)
+
+# BOXPLOTS DE ERRORES ===
+ggplot(errores, aes(x = Modelo, y = ErrorAbs, fill = Modelo)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Distribución de Errores Absolutos por Modelo",
+       x = "Modelo", y = "Error Absoluto") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+ggplot(errores, aes(x = Modelo, y = Desv, fill = Modelo)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Distribución de Desviaciones por Modelo",
+       x = "Modelo", y = "Desviación (Residuo)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none")
+
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+
+
+# Cargar librerías necesarias
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(forecast)
+library(ggplot2)
+# MODELO PREDICTIVO NNAR PARA EL AÑO 2023
+# === 1. Cargar y preparar datos ===
+datos <- read_excel("lluvia_ponderada_estaciones.xlsx")
+datos$FECHA <- seq.Date(from = as.Date("1981-01-01"), by = "day", length.out = nrow(datos))
+
+mensual <- datos %>%
+  mutate(anio = year(FECHA), mes = month(FECHA)) %>%
+  group_by(anio, mes) %>%
+  summarise(lluvia = sum(TOTAL_PONDERADA, na.rm = TRUE)) %>%
+  ungroup()
+
+ts_mensual <- ts(mensual$lluvia, start = c(1981, 1), frequency = 12)
+train <- window(ts_mensual, end = c(2022, 12))
+
+# === 2. Modelo NNAR y pronóstico para 2023 ===
+modelo_nnet_2023 <- nnetar(train, size = 7, repeats = 20)
+pronostico_2023 <- forecast(modelo_nnet_2023, h = 12, PI = TRUE, bootstrap = TRUE)
+
+# === 3. Comparación con promedio histórico ===
+prom_hist <- mean(train, na.rm = TRUE)
+prom_2023 <- mean(pronostico_2023$mean)
+
+cat("Promedio histórico (1981–2022):", round(prom_hist, 2), "mm\n")
+cat("Promedio pronosticado 2023:", round(prom_2023, 2), "mm\n")
+
+if (prom_2023 > prom_hist) {
+  cat("🔼 El pronóstico de 2023 está POR ENCIMA del promedio histórico.\n")
+} else if (prom_2023 < prom_hist) {
+  cat("🔽 El pronóstico de 2023 está POR DEBAJO del promedio histórico.\n")
+} else {
+  cat("⏺ El pronóstico de 2023 ES IGUAL al promedio histórico.\n")
+}
+
+# === 4. Exportar pronóstico 2023 ===
+meses <- c("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+           "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre")
+
+pronostico_df_2023 <- data.frame(
+  Mes = meses,
+  Lluvia_Pronosticada_mm = round(as.numeric(pronostico_2023$mean), 2)
+)
+
+# Añadir intervalos de confianza si están disponibles
+if (!is.null(pronostico_2023$lower)) {
+  pronostico_df_2023$IC_80_inf <- round(pronostico_2023$lower[,1], 2)
+  pronostico_df_2023$IC_80_sup <- round(pronostico_2023$upper[,1], 2)
+  pronostico_df_2023$IC_95_inf <- round(pronostico_2023$lower[,2], 2)
+  pronostico_df_2023$IC_95_sup <- round(pronostico_2023$upper[,2], 2)
+}
+
+write.csv(pronostico_df_2023, "pronostico_lluvia_2023_NNAR.csv", row.names = FALSE)
+
+# === 5. Gráfico del pronóstico ===
+autoplot(train) +
+  autolayer(pronostico_2023, series = "Pronóstico NNAR 2023") +
+  ggtitle("Pronóstico de Lluvia Mensual para 2023 (NNAR)") +
+  ylab("Lluvia (mm)") + xlab("Año") +
+  theme_minimal()
+
+
+
+
+```
+
